@@ -360,18 +360,20 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
             uBorderColor.value.copy(parseColorToVec4(borderColor, THREE));
             uHoverColor.value.copy(parseColorToVec4(hoverColor, THREE));
             uCellSize.value = cellSize;
+            
+            // Update distortion strength based on the Framer toggle.
             uDistortionStrength.value = enableDistortion ? distortionStrength : 0;
             
             const isMobile = "ontouchstart" in window;
             uHoverEnabled.value = !(isMobile && disableMobileHover);
             uOptimizeMobile.value = isMobile && optimizeMobile;
 
-            // Update new performance uniforms
+            // Update new performance uniforms from Framer props.
             plane.material.uniforms.uMotionBlurEnabled.value = enableMotionBlur;
             plane.material.uniforms.uRippleEnabled.value = enableRippleEffect;
             plane.material.uniforms.uImageSize.value = imageSize;
 
-            // Update JS animation state for distortion
+            // Update the target distortion for JS animations to respect the toggle.
             if (!threeContext.isZoomed) {
                 threeContext.targetDistortion = enableDistortion ? 1.0 : 0.0;
             }
@@ -463,30 +465,29 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
     // useCallback is used to memoize functions so they aren't recreated on every render.
 
     // This function converts screen pixel coordinates to the shader's world coordinates.
-    const screenToWorld = useCallback((screenPos: { x: number; y: number }) => {
+    // It intentionally ignores distortion for picking calculations to provide a more stable and intuitive click target.
+    const screenToWorld = useCallback((coords: { x: number; y: number }) => {
         const { plane, zoom, offset, THREE } = threeContext;
         if (!plane) return new THREE.Vector2();
+        
+        // Use the resolution (the actual size of the canvas) for normalization.
         const res = plane.material.uniforms.uResolution.value;
 
-        // Step 1: Normalize pixel coordinates to NDC (-1 to +1 range)
-        const ndc = new THREE.Vector2((screenPos.x / res.x) * 2 - 1, -(screenPos.y / res.y) * 2 + 1);
+        // 1. Normalize pixel coordinates (from 0,0 -> width,height) to Normalized Device Coordinates (-1 to +1).
+        const ndc = new THREE.Vector2((coords.x / res.x) * 2 - 1, -(coords.y / res.y) * 2 + 1);
 
-        // Step 2: Account for screen aspect ratio, zoom, and camera pan.
-        // We intentionally ignore distortion for picking calculations.
-        // While not perfectly accurate at the screen edges, it provides a more
-        // stable and intuitive click target than attempting a complex inverse distortion.
+        // 2. Account for screen aspect ratio, current zoom, and camera pan to get final world coordinates.
         const aspect = new THREE.Vector2(res.x / res.y, 1.0);
         return ndc.multiply(aspect).multiplyScalar(zoom).add(offset);
     }, [threeContext]);
 
-
-    // This function controls video playback.
+    // This function controls video playback for the hovered/zoomed cell.
     const setVideoState = useCallback(async (cellId: any) => {
-        const { videoRef, plane, videoNonce } = threeContext;
+        const { videoRef, plane } = threeContext;
         const currentNonce = ++threeContext.videoNonce;
         if (!videoRef || !plane) return;
 
-        // Find the project corresponding to the cell ID.
+        // Find the project corresponding to the cell ID using wrapping (modulo) logic.
         const getProject = (id: any) => id ? projects[(((Math.floor(id.x) + Math.floor(id.y) * 3) % projects.length) + projects.length) % projects.length] : null;
         const project = getProject(cellId);
         const newSrc = project?.video;
@@ -496,17 +497,18 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
         if (!newSrc) return;
 
         try {
-            if (currentNonce !== videoNonce) return; // Prevent race conditions
+             // Nonce check prevents race conditions from fast mouse movements.
+            if (currentNonce !== threeContext.videoNonce) return;
             if (videoRef.src !== newSrc) { videoRef.src = newSrc; await videoRef.load(); }
             plane.material.uniforms.uHoveredCellId.value.copy(cellId);
             await videoRef.play();
-            if (currentNonce === videoNonce) plane.material.uniforms.uIsVideoActive.value = true;
+            if (currentNonce === threeContext.videoNonce) plane.material.uniforms.uIsVideoActive.value = true;
         } catch (error: any) {
             if (error.name !== "AbortError") console.warn("Video playback failed", error);
         }
     }, [threeContext, projects]);
     
-    // This function zooms the view out.
+    // This function zooms the view out to the previous state.
     const unzoom = useCallback(() => {
         threeContext.targetOffset.copy(threeContext.lastOffset);
         threeContext.targetZoom = threeContext.lastZoom;
@@ -517,7 +519,7 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
         setZoomedProject(null);
     }, [threeContext, setVideoState, props.enableDistortion]);
     
-    // This function navigates the view to a specific cell.
+    // This function navigates the view to center on a specific cell.
     const navigateToCell = useCallback((cellId: any, isInitialZoom: boolean) => {
         const getProject = (id: any) => id ? projects[(((Math.floor(id.x) + Math.floor(id.y) * 3) % projects.length) + projects.length) % projects.length] : null;
         const project = getProject(cellId);
@@ -528,15 +530,16 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
             threeContext.lastOffset.copy(threeContext.targetOffset);
             threeContext.lastZoom = threeContext.targetZoom;
             threeContext.targetZoom = AnimationConfig.zoomedInLevel;
-            threeContext.targetDistortion = 0.0;
+            threeContext.targetDistortion = 0.0; // Always remove distortion when zoomed in.
             threeContext.isZoomed = true;
         }
         const currentCellSize = threeContext.plane.material.uniforms.uCellSize.value;
+        // Pan the camera to the center of the target cell.
         threeContext.targetOffset.copy(cellId.clone().addScalar(0.5)).multiplyScalar(currentCellSize);
         threeContext.zoomedCellId = cellId.clone();
     }, [threeContext, projects, setVideoState]);
 
-    // Focuses the link when zoomed in for accessibility.
+    // Focuses the "View Project" link when zoomed in, for accessibility.
     useEffect(() => {
         if (zoomedProject && linkRef.current) {
             const timer = setTimeout(() => linkRef.current?.focus(), 300);
@@ -613,17 +616,27 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
         (event.target as HTMLElement).setPointerCapture(event.pointerId);
         threeContext.isDragging = true;
         setCursor("grabbing");
-        threeContext.previousMouse.set(event.clientX, event.clientY);
-        threeContext.clickStart.set(event.clientX, event.clientY);
+        // *** FIX: Use coordinates relative to the component, not the viewport.
+        const rect = event.currentTarget.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        threeContext.previousMouse.set(x, y);
+        threeContext.clickStart.set(x, y);
     }, [threeContext]);
 
     const onPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
         if (!threeContext.renderer) return;
         (event.target as HTMLElement).releasePointerCapture(event.pointerId);
-        const clickEnd = new threeContext.THREE.Vector2(event.clientX, event.clientY);
+        
+        // *** FIX: Use coordinates relative to the component for accuracy.
+        const rect = event.currentTarget.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const clickEnd = new threeContext.THREE.Vector2(x, y);
+
         const delta = clickEnd.clone().sub(threeContext.clickStart);
 
-        const worldCoord = screenToWorld(clickEnd);
+        const worldCoord = screenToWorld({x, y});
         const currentCellSize = threeContext.plane.material.uniforms.uCellSize.value;
         const tappedCellId = new threeContext.THREE.Vector2(
             Math.floor(worldCoord.x / currentCellSize),
@@ -635,15 +648,18 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
 
         if (threeContext.isZoomed) {
             if (isTap) {
+                // If the same cell is tapped, unzoom. Otherwise, navigate to the newly tapped cell.
                 if (tappedCellId.equals(threeContext.zoomedCellId)) unzoom();
                 else navigateToCell(tappedCellId, false);
             } else if (isSwipe && props.enableSwipe) {
+                // If swiped (and enabled), navigate to the adjacent cell.
                 const nextCell = threeContext.zoomedCellId.clone();
                 if (Math.abs(delta.x) > Math.abs(delta.y)) nextCell.x -= Math.sign(delta.x);
                 else nextCell.y += Math.sign(delta.y);
                 navigateToCell(nextCell, false);
             }
         } else if (isTap) {
+            // If not zoomed, a tap will zoom into the selected cell.
             navigateToCell(tappedCellId, true);
         }
 
@@ -653,8 +669,18 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
 
     const onPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
         if (!threeContext.renderer) return;
-        threeContext.targetMousePos.set(event.clientX, event.clientY);
+        // *** FIX: Use coordinates relative to the component.
+        const rect = event.currentTarget.getBoundingClientRect();
+        threeContext.targetMousePos.set(event.clientX - rect.left, event.clientY - rect.top);
     }, [threeContext]);
+
+    const onPointerLeave = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+        // Only trigger the 'up' event if the user was actively dragging.
+        if (threeContext.isDragging) {
+            onPointerUp(event);
+        }
+    }, [threeContext, onPointerUp]);
+
 
     const onWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
         if (!threeContext.renderer || threeContext.isZoomed) return;
@@ -696,17 +722,20 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
             ref={mountRef}
             style={{
                 ...style,
-                cursor,
-                touchAction: "none",
-                overflow: "hidden",
+                // *** FIX: Ensure the component fills its container and pins correctly.
+                width: "100%",
+                height: "100%",
                 position: "absolute",
                 top: 0,
                 left: 0,
+                cursor,
+                touchAction: "none",
+                overflow: "hidden",
             }}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
-            onPointerLeave={onPointerUp} // Use onPointerUp to handle leaving the canvas while dragging
+            onPointerLeave={onPointerLeave}
             onWheel={onWheel}
         >
             <a
@@ -725,6 +754,7 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
                     left: "50%",
                     transform: "translateX(-50%)",
                     color: "white",
+                    fontFamily: props.fontFamily,
                     fontSize: "1.125rem",
                     textDecoration: "none",
                     transition: "opacity 500ms ease-in-out",
@@ -733,7 +763,7 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
                     zIndex: 10,
                 }}
             >
-                <span style={{ position: "relative", padding: "0.25rem 0" }}>
+                <span style={{ position: "relative", padding: "0.25rem 0.5rem" }}>
                     View Project
                     <span
                         style={{
@@ -780,13 +810,22 @@ addPropertyControls(InteractiveGridFramer, {
     textColor: { type: ControlType.Color, defaultValue: "#808080", title: "Text" },
     // Behavior
     cellSize: { type: ControlType.Number, defaultValue: 0.75, min: 0.1, max: 2, step: 0.05, title: "Cell Size" },
-    distortionStrength: { type: ControlType.Number, defaultValue: 1.0, min: 0, max: 2, step: 0.1, title: "Distortion Strength" },
+    distortionStrength: { 
+        type: ControlType.Number, 
+        defaultValue: 1.0, 
+        min: 0, 
+        max: 2, 
+        step: 0.1, 
+        title: "Distortion Strength",
+        hidden: (props) => !props.enableDistortion,
+    },
     // Performance & Effects
-    enableMotionBlur: { type: ControlType.Boolean, defaultValue: true, title: "Motion Blur" },
-    enableDistortion: { type: ControlType.Boolean, defaultValue: true, title: "Distortion" },
-    enableRippleEffect: { type: ControlType.Boolean, defaultValue: true, title: "Ripple Effect" },
-    enableSwipe: { type: ControlType.Boolean, defaultValue: true, title: "Swipe Navigation" },
+    enableDistortion: { type: ControlType.Boolean, defaultValue: true, title: "Enable Distortion" },
+    enableMotionBlur: { type: ControlType.Boolean, defaultValue: true, title: "Enable Motion Blur" },
+    enableRippleEffect: { type: ControlType.Boolean, defaultValue: true, title: "Enable Ripple Effect" },
+    enableSwipe: { type: ControlType.Boolean, defaultValue: true, title: "Enable Swipe Nav" },
     imageSize: { type: ControlType.Number, defaultValue: 0.6, min: 0.1, max: 1.0, step: 0.05, title: "Image Size" },
+    // Mobile Optimizations
     disableMobileHover: { type: ControlType.Boolean, defaultValue: false, title: "Disable Mobile Hover" },
     optimizeMobile: { type: ControlType.Boolean, defaultValue: true, title: "Optimize Mobile" },
 });
