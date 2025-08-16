@@ -1,0 +1,5 @@
+{
+  "name": "Interactive WebGL Project Grid",
+  "description": "A visually stunning, interactive portfolio grid built with React and Three.js. Users can navigate a dynamic grid of projects, with zoom, pan, and hover effects powered by custom WebGL shaders.",
+  "requestFramePermissions": []
+}
