@@ -38,6 +38,9 @@ interface InteractiveGridProps {
     enableRippleEffect: boolean;
     enableSwipe: boolean;
     imageSize: number;
+    // New zoom control
+    defaultZoomLevel: number;
+    zoomedInLevel: number;
 }
 
 // --- CONFIGURATION ---
@@ -258,8 +261,8 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
                 isDragging: false, isZoomed: false, previousMouse: new THREE.Vector2(), clickStart: new THREE.Vector2(),
                 offset: new THREE.Vector2(), targetOffset: new THREE.Vector2(), offsetVelocity: new THREE.Vector2(),
                 mousePos: new THREE.Vector2(-1, -1), targetMousePos: new THREE.Vector2(-1, -1),
-                zoom: 1.0, targetZoom: 1.0, distortion: 1.0, targetDistortion: 1.0, zoomProgress: 0.0,
-                lastOffset: new THREE.Vector2(), lastZoom: 1.0, videoNonce: 0, hoveredCellId: null, zoomedCellId: null,
+                zoom: props.defaultZoomLevel, targetZoom: props.defaultZoomLevel, distortion: 1.0, targetDistortion: 1.0, zoomProgress: 0.0,
+                lastOffset: new THREE.Vector2(), lastZoom: props.defaultZoomLevel, videoNonce: 0, hoveredCellId: null, zoomedCellId: null,
             });
 
             // Create the core Three.js components: scene, camera, and renderer.
@@ -353,7 +356,7 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
             const { 
                 backgroundColor, borderColor, hoverColor, cellSize, distortionStrength, 
                 disableMobileHover, optimizeMobile, enableMotionBlur, enableDistortion, 
-                enableRippleEffect, imageSize 
+                enableRippleEffect, imageSize, defaultZoomLevel
             } = props;
             
             uBackgroundColor.value.copy(parseColorToVec4(backgroundColor, THREE));
@@ -376,6 +379,12 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
             // Update the target distortion for JS animations to respect the toggle.
             if (!threeContext.isZoomed) {
                 threeContext.targetDistortion = enableDistortion ? 1.0 : 0.0;
+            }
+            
+            // Update zoom level from Framer control, only if not currently zoomed in.
+            if (!threeContext.isZoomed) {
+                threeContext.targetZoom = defaultZoomLevel;
+                threeContext.lastZoom = defaultZoomLevel;
             }
         }
     }, [isThreeInitialized, props, threeContext]);
@@ -529,7 +538,7 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
         if (isInitialZoom) {
             threeContext.lastOffset.copy(threeContext.targetOffset);
             threeContext.lastZoom = threeContext.targetZoom;
-            threeContext.targetZoom = AnimationConfig.zoomedInLevel;
+            threeContext.targetZoom = props.zoomedInLevel;
             threeContext.targetDistortion = 0.0; // Always remove distortion when zoomed in.
             threeContext.isZoomed = true;
         }
@@ -537,7 +546,7 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
         // Pan the camera to the center of the target cell.
         threeContext.targetOffset.copy(cellId.clone().addScalar(0.5)).multiplyScalar(currentCellSize);
         threeContext.zoomedCellId = cellId.clone();
-    }, [threeContext, projects, setVideoState]);
+    }, [threeContext, projects, setVideoState, props.zoomedInLevel]);
 
     // Focuses the "View Project" link when zoomed in, for accessibility.
     useEffect(() => {
@@ -819,6 +828,22 @@ addPropertyControls(InteractiveGridFramer, {
         title: "Distortion Strength",
         hidden: (props) => !props.enableDistortion,
     },
+    defaultZoomLevel: {
+        title: "Default Zoom",
+        type: ControlType.Number,
+        defaultValue: 1.0,
+        min: 0.2,
+        max: 3.0,
+        step: 0.05,
+    },
+    zoomedInLevel: {
+        title: "Zoom-In Level",
+        type: ControlType.Number,
+        defaultValue: 0.3,
+        min: 0.1,
+        max: 1.0,
+        step: 0.05,
+    },
     // Performance & Effects
     enableDistortion: { type: ControlType.Boolean, defaultValue: true, title: "Enable Distortion" },
     enableMotionBlur: { type: ControlType.Boolean, defaultValue: true, title: "Enable Motion Blur" },
@@ -850,4 +875,6 @@ InteractiveGridFramer.defaultProps = {
     enableRippleEffect: true,
     enableSwipe: true,
     imageSize: 0.6,
+    defaultZoomLevel: 1.0,
+    zoomedInLevel: 0.3,
 };
