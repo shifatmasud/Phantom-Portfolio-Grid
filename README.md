@@ -1,5 +1,7 @@
 # Interactive WebGL Grid - README (Explain Like I'm 5 Version)
 
+**[Live Demo](https://top-screens-057770.framer.app/)**
+
 Hello new developer! Welcome to this fun project. It might look complex, but it's like building with LEGOs. Here’s a simple map of how it all fits together.
 
 ## The Big Picture: What is this?
