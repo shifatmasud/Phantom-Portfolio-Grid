@@ -40,7 +40,12 @@
     -   The original code passed state and callbacks (like `setVideoState`) between hooks. In the flattened version, these will become simple variables and functions defined within the component's scope.
     -   For example, `setVideoState` will be defined as a `useCallback` and then used directly by the other logic (like the animation loop `useEffect`) within the same component function.
 
-7.  **Add Line-by-Line Comments:**
+7.  **Implement Robust Dependency Loading:**
+    -   The Framer environment may not have global libraries like `THREE.js` available immediately.
+    -   Implement a dynamic script loader within a `useEffect`. This loader should check if `window.THREE` exists. If not, it should create a `<script>` tag, append it to the document, and wait for the `onload` event.
+    -   The main Three.js initialization logic must only run *after* the script has successfully loaded. This prevents race conditions.
+
+8.  **Add Line-by-Line Comments:**
     -   This is a critical step. Go through the consolidated code line by line.
     -   Explain the purpose of every `useState` and `useRef` variable.
     -   Describe what each `useEffect` block is responsible for (e.g., "// This effect initializes the Three.js scene, camera, and renderer.").
@@ -48,11 +53,11 @@
     -   Add comments to complex calculations or algorithms, especially within the animation loop and interaction handlers.
     -   The goal is to make the code readable from top to bottom for someone who has never seen it before.
 
-8.  **Add Framer Property Controls:**
+9.  **Add Framer Property Controls:**
     -   At the very end of the file, after the component definition, add the `addPropertyControls` block.
     -   Define controls for all the props the component accepts (`projects`, `backgroundColor`, `cellSize`, etc.). This makes the component configurable within the Framer UI.
     -   Provide sensible default values for all properties.
 
-9.  **Final Review:**
+10. **Final Review:**
     -   Read through the entire file. Ensure there are no relative imports left (e.g., `import { ... } from './utils'`). All necessary code should be present within the single file.
     -   Check that the component is self-contained and ready to be copied into Framer.

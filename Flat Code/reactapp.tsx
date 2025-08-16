@@ -5,6 +5,7 @@ import React, {
     useEffect,
     CSSProperties,
 } from "react";
+import ReactDOM from 'react-dom/client';
 
 // --- TYPE DEFINITIONS ---
 // This interface defines the data structure for a single project.
@@ -681,5 +682,17 @@ function App() {
     </main>
   );
 }
+
+const rootElement = document.getElementById('root');
+if (!rootElement) {
+  throw new Error("Could not find root element to mount to");
+}
+
+const root = ReactDOM.createRoot(rootElement);
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
 
 export default App;

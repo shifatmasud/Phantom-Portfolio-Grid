@@ -230,76 +230,105 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
     // Destructure props for easier access.
     const { projects, fontFamily, fontWeight, textColor, style } = props;
 
-    // --- EFFECT: INITIAL THREE.JS SETUP ---
-    // This useEffect runs only once when the component mounts. Its job is to set up the entire WebGL scene.
+    // --- EFFECT: DYNAMICALLY LOAD THREE.JS AND INITIALIZE SCENE ---
+    // This useEffect runs only once to handle the entire setup process.
+    // It ensures Three.js is loaded before attempting to create a WebGL scene.
     useEffect(() => {
-        // Get the DOM element we'll be rendering into.
         const currentMount = mountRef.current;
         if (!currentMount) return;
 
-        // Load the THREE.js library from the window object (it's included via a script tag in Framer).
-        const THREE = (window as any).THREE;
-        if (!THREE) {
-            console.error("THREE.js not loaded.");
-            return;
-        }
+        // This function contains all the Three.js scene setup logic.
+        // It's called only after we've confirmed that the THREE library is available.
+        const initThree = (THREE: any) => {
+            // Initialize the threeContext object with all necessary properties.
+            threeContext.THREE = THREE;
+            const isMobile = "ontouchstart" in window;
+            Object.assign(threeContext, {
+                isDragging: false, isZoomed: false, previousMouse: new THREE.Vector2(), clickStart: new THREE.Vector2(),
+                offset: new THREE.Vector2(), targetOffset: new THREE.Vector2(), offsetVelocity: new THREE.Vector2(),
+                mousePos: new THREE.Vector2(-1, -1), targetMousePos: new THREE.Vector2(-1, -1),
+                zoom: 1.0, targetZoom: 1.0, distortion: 1.0, targetDistortion: 1.0, zoomProgress: 0.0,
+                lastOffset: new THREE.Vector2(), lastZoom: 1.0, videoNonce: 0, hoveredCellId: null, zoomedCellId: null,
+            });
 
-        // Initialize the threeContext object with all necessary properties.
-        threeContext.THREE = THREE;
-        const isMobile = "ontouchstart" in window;
-        Object.assign(threeContext, {
-            isDragging: false, isZoomed: false, previousMouse: new THREE.Vector2(), clickStart: new THREE.Vector2(),
-            offset: new THREE.Vector2(), targetOffset: new THREE.Vector2(), offsetVelocity: new THREE.Vector2(),
-            mousePos: new THREE.Vector2(-1, -1), targetMousePos: new THREE.Vector2(-1, -1),
-            zoom: 1.0, targetZoom: 1.0, distortion: 1.0, targetDistortion: 1.0, zoomProgress: 0.0,
-            lastOffset: new THREE.Vector2(), lastZoom: 1.0, videoNonce: 0, hoveredCellId: null, zoomedCellId: null,
-        });
+            // Create the core Three.js components: scene, camera, and renderer.
+            threeContext.scene = new THREE.Scene();
+            threeContext.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+            threeContext.camera.position.z = 1;
+            threeContext.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            threeContext.renderer.setClearColor(0x000000, 0);
+            threeContext.renderer.setSize(currentMount.clientWidth, currentMount.clientHeight);
+            threeContext.renderer.setPixelRatio(isMobile ? Math.min(window.devicePixelRatio, 1.5) : window.devicePixelRatio);
+            currentMount.appendChild(threeContext.renderer.domElement);
 
-        // Create the core Three.js components: scene, camera, and renderer.
-        threeContext.scene = new THREE.Scene();
-        threeContext.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
-        threeContext.camera.position.z = 1;
-        threeContext.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-        threeContext.renderer.setClearColor(0x000000, 0);
-        threeContext.renderer.setSize(currentMount.clientWidth, currentMount.clientHeight);
-        threeContext.renderer.setPixelRatio(isMobile ? Math.min(window.devicePixelRatio, 1.5) : window.devicePixelRatio);
-        currentMount.appendChild(threeContext.renderer.domElement);
+            // Create the video element and texture for hover previews.
+            threeContext.videoRef = document.createElement("video");
+            Object.assign(threeContext.videoRef, { loop: true, muted: true, playsInline: true, crossOrigin: "anonymous", style: "display:none" });
+            currentMount.appendChild(threeContext.videoRef);
+            threeContext.videoTextureRef = new THREE.VideoTexture(threeContext.videoRef);
 
-        // Create the video element and texture for hover previews.
-        threeContext.videoRef = document.createElement("video");
-        Object.assign(threeContext.videoRef, { loop: true, muted: true, playsInline: true, crossOrigin: "anonymous", style: "display:none" });
-        currentMount.appendChild(threeContext.videoRef);
-        threeContext.videoTextureRef = new THREE.VideoTexture(threeContext.videoRef);
+            // Define the shader uniforms (variables passed from JS to the GLSL shader).
+            const uniforms = {
+                uOffset: { value: threeContext.offset }, uResolution: { value: new THREE.Vector2() },
+                uBorderColor: { value: new THREE.Vector4() }, uHoverColor: { value: new THREE.Vector4() },
+                uBackgroundColor: { value: new THREE.Vector4() }, uMousePos: { value: threeContext.mousePos },
+                uZoom: { value: 1.0 }, uDistortionStrength: { value: 1.0 }, uCellSize: { value: 0.75 },
+                uTextureCount: { value: 0 }, uImageAtlas: { value: null }, uTextAtlas: { value: null },
+                uActiveVideo: { value: threeContext.videoTextureRef }, uHoveredCellId: { value: new THREE.Vector2(-999, -999) },
+                uIsVideoActive: { value: false }, uZoomProgress: { value: 0.0 }, uTime: { value: 0.0 },
+                uIsMobile: { value: isMobile }, uHoverEnabled: { value: true }, uOptimizeMobile: { value: true },
+            };
 
-        // Define the shader uniforms (variables passed from JS to the GLSL shader).
-        const uniforms = {
-            uOffset: { value: threeContext.offset }, uResolution: { value: new THREE.Vector2() },
-            uBorderColor: { value: new THREE.Vector4() }, uHoverColor: { value: new THREE.Vector4() },
-            uBackgroundColor: { value: new THREE.Vector4() }, uMousePos: { value: threeContext.mousePos },
-            uZoom: { value: 1.0 }, uDistortionStrength: { value: 1.0 }, uCellSize: { value: 0.75 },
-            uTextureCount: { value: 0 }, uImageAtlas: { value: null }, uTextAtlas: { value: null },
-            uActiveVideo: { value: threeContext.videoTextureRef }, uHoveredCellId: { value: new THREE.Vector2(-999, -999) },
-            uIsVideoActive: { value: false }, uZoomProgress: { value: 0.0 }, uTime: { value: 0.0 },
-            uIsMobile: { value: isMobile }, uHoverEnabled: { value: true }, uOptimizeMobile: { value: true },
+            // Create a plane that fills the screen and apply our custom shader material to it.
+            threeContext.plane = new THREE.Mesh(
+                new THREE.PlaneGeometry(2, 2),
+                new THREE.ShaderMaterial({ uniforms, vertexShader, fragmentShader, transparent: true })
+            );
+            threeContext.scene.add(threeContext.plane);
+
+            // Signal that initialization is complete so other effects can run.
+            setIsThreeInitialized(true);
         };
 
-        // Create a plane that fills the screen and apply our custom shader material to it.
-        threeContext.plane = new THREE.Mesh(
-            new THREE.PlaneGeometry(2, 2),
-            new THREE.ShaderMaterial({ uniforms, vertexShader, fragmentShader, transparent: true })
-        );
-        threeContext.scene.add(threeContext.plane);
+        // --- Script Loading Logic ---
+        let script: HTMLScriptElement | null = null;
+        if ((window as any).THREE) {
+            // If THREE is already on the window, initialize immediately.
+            initThree((window as any).THREE);
+        } else {
+            // Otherwise, create a script tag to load it from the CDN.
+            script = document.createElement("script");
+            script.src = "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
+            script.async = true;
+            
+            // When the script finishes loading, call our initialization function.
+            script.onload = () => {
+                if ((window as any).THREE) {
+                    initThree((window as any).THREE);
+                } else {
+                    console.error("THREE.js failed to load from CDN, even though the script onload event fired.");
+                }
+            };
+            script.onerror = () => {
+                console.error("Error loading the THREE.js script from CDN.");
+            };
+            
+            // Add the script to the document head to begin loading.
+            document.head.appendChild(script);
+        }
 
-        // Signal that initialization is complete so other effects can run.
-        setIsThreeInitialized(true);
-
-        // Cleanup function: This runs when the component unmounts to prevent memory leaks.
+        // Cleanup function: runs when the component unmounts.
         return () => {
+            // Clean up Three.js resources
             if (threeContext.renderer?.domElement.parentNode === currentMount) {
                 currentMount.removeChild(threeContext.renderer.domElement);
             }
             if (threeContext.videoRef?.parentNode === currentMount) {
                 currentMount.removeChild(threeContext.videoRef);
+            }
+            // Clean up the script tag if it was added.
+            if (script && script.parentNode) {
+                script.parentNode.removeChild(script);
             }
         };
     }, []); // Empty dependency array means this effect runs only once on mount.
