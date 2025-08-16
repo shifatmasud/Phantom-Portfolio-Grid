@@ -474,20 +474,24 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
     // useCallback is used to memoize functions so they aren't recreated on every render.
 
     // This function converts screen pixel coordinates to the shader's world coordinates.
-    // It intentionally ignores distortion for picking calculations to provide a more stable and intuitive click target.
+    // It's a JS mirror of the GLSL logic, replicating the barrel distortion to ensure
+    // that a click on a visually distorted point maps to the correct underlying world coordinate.
     const screenToWorld = useCallback((coords: { x: number; y: number }) => {
-        const { plane, zoom, offset, THREE } = threeContext;
+        // The `distortion` value is the live, animated distortion strength.
+        const { plane, zoom, offset, distortion, THREE } = threeContext;
         if (!plane) return new THREE.Vector2();
-        
-        // Use the resolution (the actual size of the canvas) for normalization.
+
         const res = plane.material.uniforms.uResolution.value;
 
-        // 1. Normalize pixel coordinates (from 0,0 -> width,height) to Normalized Device Coordinates (-1 to +1).
+        // 1. Normalize pixel coordinates to Normalized Device Coordinates (-1 to +1).
         const ndc = new THREE.Vector2((coords.x / res.x) * 2 - 1, -(coords.y / res.y) * 2 + 1);
 
-        // 2. Account for screen aspect ratio, current zoom, and camera pan to get final world coordinates.
+        // 2. Replicate the shader's barrel distortion. This is the crucial step for accurate picking.
+        const distorted = ndc.clone().multiplyScalar(1.0 - distortion * 0.08 * ndc.length() * ndc.length());
+
+        // 3. Account for aspect ratio, zoom, and pan to get the final world coordinate.
         const aspect = new THREE.Vector2(res.x / res.y, 1.0);
-        return ndc.multiply(aspect).multiplyScalar(zoom).add(offset);
+        return distorted.multiply(aspect).multiplyScalar(zoom).add(offset);
     }, [threeContext]);
 
     // This function controls video playback for the hovered/zoomed cell.
