@@ -32,6 +32,12 @@ interface InteractiveGridProps {
     disableMobileHover: boolean;
     optimizeMobile: boolean;
     style: CSSProperties;
+    // New performance and interaction controls
+    enableMotionBlur: boolean;
+    enableDistortion: boolean;
+    enableRippleEffect: boolean;
+    enableSwipe: boolean;
+    imageSize: number;
 }
 
 // --- CONFIGURATION ---
@@ -84,6 +90,12 @@ const fragmentShader = `
   uniform bool uIsMobile;
   uniform bool uHoverEnabled;
   uniform bool uOptimizeMobile;
+  
+  // New uniforms for performance controls
+  uniform bool uMotionBlurEnabled;
+  uniform bool uRippleEnabled;
+  uniform float uImageSize;
+
   in vec2 vUv;
 
   vec4 getSceneColor(vec2 uv, float effectIntensity) {
@@ -100,7 +112,7 @@ const fragmentShader = `
       mouseScreenUV.y = -mouseScreenUV.y;
       vec2 mouseWorldCoord = (mouseScreenUV * aspectRatio) * uZoom + uOffset;
 
-      if (!uOptimizeMobile) {
+      if (uRippleEnabled && !uOptimizeMobile) {
         float distToMouseRipple = length(mouseWorldCoord - worldCoord);
         float rippleFalloff = smoothstep(uCellSize * 1.5, 0.0, distToMouseRipple);
         float ripple = sin(distToMouseRipple * 12.0 - uTime * 3.0) * rippleFalloff * 0.002;
@@ -127,8 +139,7 @@ const fragmentShader = `
                        smoothstep(0.0, lineWidth, cellUV.y) * smoothstep(1.0, 1.0 - lineWidth, cellUV.y);
 
       float hoverScale = 1.0 + hoverIntensity * 0.05;
-      float imageSize = 0.6;
-      vec2 imageUV = (cellUV - (1.0 - imageSize * hoverScale) * 0.5) / (imageSize * hoverScale);
+      vec2 imageUV = (cellUV - (1.0 - uImageSize * hoverScale) * 0.5) / (uImageSize * hoverScale);
       float imageAlpha = smoothstep(0.0, 0.01, imageUV.x) * smoothstep(1.0, 0.99, imageUV.x) *
                            smoothstep(0.0, 0.01, imageUV.y) * smoothstep(1.0, 0.99, imageUV.y);
       
@@ -173,7 +184,7 @@ const fragmentShader = `
     float effectIntensity = sin(uZoomProgress * PI);
     vec4 finalColor;
 
-    if (effectIntensity > 0.01 && !uOptimizeMobile) {
+    if (uMotionBlurEnabled && effectIntensity > 0.01 && !uOptimizeMobile) {
       vec2 blurVector = normalize(vUv - 0.5) * effectIntensity * 0.03;
       finalColor = vec4(0.0);
       const int SAMPLES = 6;
@@ -277,6 +288,7 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
                 uActiveVideo: { value: threeContext.videoTextureRef }, uHoveredCellId: { value: new THREE.Vector2(-999, -999) },
                 uIsVideoActive: { value: false }, uZoomProgress: { value: 0.0 }, uTime: { value: 0.0 },
                 uIsMobile: { value: isMobile }, uHoverEnabled: { value: true }, uOptimizeMobile: { value: true },
+                uMotionBlurEnabled: { value: true }, uRippleEnabled: { value: true }, uImageSize: { value: 0.6 },
             };
 
             // Create a plane that fills the screen and apply our custom shader material to it.
@@ -333,23 +345,36 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
         };
     }, []); // Empty dependency array means this effect runs only once on mount.
 
-    // --- EFFECT: UPDATE SHADER UNIFORMS ---
-    // This effect watches for changes in props and updates the corresponding shader uniforms.
+    // --- EFFECT: UPDATE SHADER UNIFORMS & ANIMATION STATE FROM PROPS ---
     useEffect(() => {
         if (isThreeInitialized) {
             const { plane, THREE } = threeContext;
             const { uBorderColor, uHoverColor, uBackgroundColor, uCellSize, uDistortionStrength, uHoverEnabled, uOptimizeMobile } = plane.material.uniforms;
-            const { backgroundColor, borderColor, hoverColor, cellSize, distortionStrength, disableMobileHover, optimizeMobile } = props;
+            const { 
+                backgroundColor, borderColor, hoverColor, cellSize, distortionStrength, 
+                disableMobileHover, optimizeMobile, enableMotionBlur, enableDistortion, 
+                enableRippleEffect, imageSize 
+            } = props;
             
             uBackgroundColor.value.copy(parseColorToVec4(backgroundColor, THREE));
             uBorderColor.value.copy(parseColorToVec4(borderColor, THREE));
             uHoverColor.value.copy(parseColorToVec4(hoverColor, THREE));
             uCellSize.value = cellSize;
-            uDistortionStrength.value = distortionStrength;
+            uDistortionStrength.value = enableDistortion ? distortionStrength : 0;
             
             const isMobile = "ontouchstart" in window;
             uHoverEnabled.value = !(isMobile && disableMobileHover);
             uOptimizeMobile.value = isMobile && optimizeMobile;
+
+            // Update new performance uniforms
+            plane.material.uniforms.uMotionBlurEnabled.value = enableMotionBlur;
+            plane.material.uniforms.uRippleEnabled.value = enableRippleEffect;
+            plane.material.uniforms.uImageSize.value = imageSize;
+
+            // Update JS animation state for distortion
+            if (!threeContext.isZoomed) {
+                threeContext.targetDistortion = enableDistortion ? 1.0 : 0.0;
+            }
         }
     }, [isThreeInitialized, props, threeContext]);
 
@@ -439,14 +464,21 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
 
     // This function converts screen pixel coordinates to the shader's world coordinates.
     const screenToWorld = useCallback((screenPos: { x: number; y: number }) => {
-        const { plane, zoom, offset, distortion, THREE } = threeContext;
+        const { plane, zoom, offset, THREE } = threeContext;
         if (!plane) return new THREE.Vector2();
         const res = plane.material.uniforms.uResolution.value;
+
+        // Step 1: Normalize pixel coordinates to NDC (-1 to +1 range)
         const ndc = new THREE.Vector2((screenPos.x / res.x) * 2 - 1, -(screenPos.y / res.y) * 2 + 1);
-        const distorted = ndc.clone().multiplyScalar(1.0 - distortion * 0.08 * ndc.length() * ndc.length());
+
+        // Step 2: Account for screen aspect ratio, zoom, and camera pan.
+        // We intentionally ignore distortion for picking calculations.
+        // While not perfectly accurate at the screen edges, it provides a more
+        // stable and intuitive click target than attempting a complex inverse distortion.
         const aspect = new THREE.Vector2(res.x / res.y, 1.0);
-        return distorted.multiply(aspect).multiplyScalar(zoom).add(offset);
+        return ndc.multiply(aspect).multiplyScalar(zoom).add(offset);
     }, [threeContext]);
+
 
     // This function controls video playback.
     const setVideoState = useCallback(async (cellId: any) => {
@@ -478,12 +510,12 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
     const unzoom = useCallback(() => {
         threeContext.targetOffset.copy(threeContext.lastOffset);
         threeContext.targetZoom = threeContext.lastZoom;
-        threeContext.targetDistortion = 1.0;
+        threeContext.targetDistortion = props.enableDistortion ? 1.0 : 0.0;
         threeContext.isZoomed = false;
         threeContext.zoomedCellId = null;
         setVideoState(null);
         setZoomedProject(null);
-    }, [threeContext, setVideoState]);
+    }, [threeContext, setVideoState, props.enableDistortion]);
     
     // This function navigates the view to a specific cell.
     const navigateToCell = useCallback((cellId: any, isInitialZoom: boolean) => {
@@ -591,8 +623,6 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
         const clickEnd = new threeContext.THREE.Vector2(event.clientX, event.clientY);
         const delta = clickEnd.clone().sub(threeContext.clickStart);
 
-        // This is the robust way to calculate the tapped cell ID.
-        // The previous chained-method approach was buggy.
         const worldCoord = screenToWorld(clickEnd);
         const currentCellSize = threeContext.plane.material.uniforms.uCellSize.value;
         const tappedCellId = new threeContext.THREE.Vector2(
@@ -607,7 +637,7 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
             if (isTap) {
                 if (tappedCellId.equals(threeContext.zoomedCellId)) unzoom();
                 else navigateToCell(tappedCellId, false);
-            } else if (isSwipe) {
+            } else if (isSwipe && props.enableSwipe) {
                 const nextCell = threeContext.zoomedCellId.clone();
                 if (Math.abs(delta.x) > Math.abs(delta.y)) nextCell.x -= Math.sign(delta.x);
                 else nextCell.y += Math.sign(delta.y);
@@ -619,7 +649,7 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
 
         threeContext.isDragging = false;
         setCursor("grab");
-    }, [threeContext, screenToWorld, navigateToCell, unzoom]);
+    }, [threeContext, screenToWorld, navigateToCell, unzoom, props.enableSwipe]);
 
     const onPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
         if (!threeContext.renderer) return;
@@ -664,7 +694,15 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
     return (
         <div
             ref={mountRef}
-            style={{ ...style, cursor, touchAction: "none", overflow: "hidden", position: "relative" }}
+            style={{
+                ...style,
+                cursor,
+                touchAction: "none",
+                overflow: "hidden",
+                position: "absolute",
+                top: 0,
+                left: 0,
+            }}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
@@ -733,17 +771,26 @@ addPropertyControls(InteractiveGridFramer, {
             },
         },
     },
-    fontFamily: { type: ControlType.String, defaultValue: "IBM Plex Mono, monospace" },
-    fontWeight: { type: ControlType.String, defaultValue: "bold" },
-    backgroundColor: { type: ControlType.Color, defaultValue: "#0a0a0a" },
-    borderColor: { type: ControlType.String, defaultValue: "rgba(30, 30, 30, 0.5)" },
-    hoverColor: { type: ControlType.String, defaultValue: "rgba(255, 255, 255, 0.05)" },
-    textColor: { type: ControlType.Color, defaultValue: "#808080" },
-    cellSize: { type: ControlType.Number, defaultValue: 0.75, min: 0.1, max: 2, step: 0.05 },
-    distortionStrength: { type: ControlType.Number, defaultValue: 1.0, min: 0, max: 2, step: 0.1 },
-    disableMobileHover: { type: ControlType.Boolean, defaultValue: false },
-    optimizeMobile: { type: ControlType.Boolean, defaultValue: true },
+    // Styling
+    fontFamily: { type: ControlType.String, defaultValue: "IBM Plex Mono, monospace", title: "Font Family" },
+    fontWeight: { type: ControlType.String, defaultValue: "bold", title: "Font Weight" },
+    backgroundColor: { type: ControlType.Color, defaultValue: "#0a0a0a", title: "Background" },
+    borderColor: { type: ControlType.String, defaultValue: "rgba(30, 30, 30, 0.5)", title: "Border" },
+    hoverColor: { type: ControlType.String, defaultValue: "rgba(255, 255, 255, 0.05)", title: "Hover" },
+    textColor: { type: ControlType.Color, defaultValue: "#808080", title: "Text" },
+    // Behavior
+    cellSize: { type: ControlType.Number, defaultValue: 0.75, min: 0.1, max: 2, step: 0.05, title: "Cell Size" },
+    distortionStrength: { type: ControlType.Number, defaultValue: 1.0, min: 0, max: 2, step: 0.1, title: "Distortion Strength" },
+    // Performance & Effects
+    enableMotionBlur: { type: ControlType.Boolean, defaultValue: true, title: "Motion Blur" },
+    enableDistortion: { type: ControlType.Boolean, defaultValue: true, title: "Distortion" },
+    enableRippleEffect: { type: ControlType.Boolean, defaultValue: true, title: "Ripple Effect" },
+    enableSwipe: { type: ControlType.Boolean, defaultValue: true, title: "Swipe Navigation" },
+    imageSize: { type: ControlType.Number, defaultValue: 0.6, min: 0.1, max: 1.0, step: 0.05, title: "Image Size" },
+    disableMobileHover: { type: ControlType.Boolean, defaultValue: false, title: "Disable Mobile Hover" },
+    optimizeMobile: { type: ControlType.Boolean, defaultValue: true, title: "Optimize Mobile" },
 });
+
 
 // Set default props for the component when used in a Framer canvas.
 InteractiveGridFramer.defaultProps = {
@@ -758,5 +805,10 @@ InteractiveGridFramer.defaultProps = {
         { title: "Glass Shift", image: "https://storage.googleapis.com/gtv-videos-bucket/sample/images/ForBiggerEscapes.jpg", year: 2023, href: "#", video: "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4" },
         { title: "Quantum Leap", image: "https://storage.googleapis.com/gtv-videos-bucket/sample/images/ForBiggerBlazes.jpg", year: 2024, href: "#", video: "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4" },
         { title: "Chroma Flow", image: "https://storage.googleapis.com/gtv-videos-bucket/sample/images/BigBuckBunny.jpg", year: 2022, href: "#", video: "https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4" },
-    ]
+    ],
+    enableMotionBlur: true,
+    enableDistortion: true,
+    enableRippleEffect: true,
+    enableSwipe: true,
+    imageSize: 0.6,
 };
