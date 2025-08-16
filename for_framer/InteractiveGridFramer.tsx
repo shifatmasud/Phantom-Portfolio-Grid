@@ -34,6 +34,21 @@ interface InteractiveGridProps {
     style: CSSProperties;
 }
 
+// --- CONFIGURATION ---
+// Centralized configuration for easy tweaking of physics, animation, and styling.
+
+const AnimationConfig = {
+    springStiffness: 0.05, damping: 0.75, lerpFactor: 0.1,
+    scrollSpeed: 0.001, swipeThreshold: 50, tapThreshold: 10,
+    zoomedInLevel: 0.3, defaultZoomLevel: 1.0,
+};
+
+const StyleConfig = {
+    textTextureWidth: 2048, textTextureHeight: 256,
+    imageAtlasTextureSize: 512, textureFontSize: 80,
+};
+
+
 // --- SHADER CODE (GLSL) ---
 // Shaders are small programs that run on the GPU for high-performance graphics.
 
@@ -322,22 +337,22 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
             // Helper function to create a texture from text using a 2D canvas.
             const createTextTexture = (p: Project) => {
                 const canvas = document.createElement("canvas");
-                canvas.width = 2048; canvas.height = 256;
+                canvas.width = StyleConfig.textTextureWidth; canvas.height = StyleConfig.textTextureHeight;
                 const ctx = canvas.getContext("2d");
                 if (!ctx) return new THREE.CanvasTexture(canvas);
-                ctx.font = `${fontWeight} 80px "${fontFamily}"`;
+                ctx.font = `${fontWeight} ${StyleConfig.textureFontSize}px "${fontFamily}"`;
                 ctx.fillStyle = textColor;
                 ctx.textBaseline = "middle";
-                ctx.fillText(p.title.toUpperCase(), 30, 128);
+                ctx.fillText(p.title.toUpperCase(), 30, StyleConfig.textTextureHeight / 2);
                 ctx.textAlign = "right";
-                ctx.fillText(p.year.toString(), 2048 - 30, 128);
+                ctx.fillText(p.year.toString(), StyleConfig.textTextureWidth - 30, StyleConfig.textTextureHeight / 2);
                 return new THREE.CanvasTexture(canvas);
             };
 
             // Helper function to combine multiple small textures into one large "atlas" for performance.
             const createTextureAtlas = (textures: any[], isText: boolean) => {
                 const atlasGridSize = Math.ceil(Math.sqrt(textures.length));
-                const textureSize = isText ? 256 : 512;
+                const textureSize = isText ? StyleConfig.textTextureHeight : StyleConfig.imageAtlasTextureSize;
                 const canvas = document.createElement("canvas");
                 canvas.width = canvas.height = atlasGridSize * textureSize;
                 const ctx = canvas.getContext("2d");
@@ -356,13 +371,14 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
              // Helper to create a placeholder if an image fails to load.
             const createPlaceholderTexture = () => {
                 const canvas = document.createElement("canvas");
-                canvas.width = canvas.height = 512;
+                const size = StyleConfig.imageAtlasTextureSize;
+                canvas.width = canvas.height = size;
                 const ctx = canvas.getContext("2d");
                 if (!ctx) return new THREE.CanvasTexture(canvas);
-                ctx.fillStyle = "#222"; ctx.fillRect(0, 0, 512, 512);
-                ctx.fillStyle = "#555"; ctx.font = `bold 50px sans-serif`;
+                ctx.fillStyle = "#222"; ctx.fillRect(0, 0, size, size);
+                ctx.fillStyle = "#555"; ctx.font = `bold ${size / 10}px sans-serif`;
                 ctx.textAlign = "center"; ctx.textBaseline = "middle";
-                ctx.fillText("Load Error", 256, 256);
+                ctx.fillText("Load Error", size / 2, size / 2);
                 return new THREE.CanvasTexture(canvas);
             };
 
@@ -450,7 +466,7 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
         if (isInitialZoom) {
             threeContext.lastOffset.copy(threeContext.targetOffset);
             threeContext.lastZoom = threeContext.targetZoom;
-            threeContext.targetZoom = 0.3; // Zoomed-in level
+            threeContext.targetZoom = AnimationConfig.zoomedInLevel;
             threeContext.targetDistortion = 0.0;
             threeContext.isZoomed = true;
         }
@@ -480,15 +496,15 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
             animationFrameId = requestAnimationFrame(animate);
 
             // Animate camera offset with spring physics for a natural feel.
-            const force = threeContext.targetOffset.clone().sub(threeContext.offset).multiplyScalar(0.05);
-            threeContext.offsetVelocity.add(force).multiplyScalar(0.75);
+            const force = threeContext.targetOffset.clone().sub(threeContext.offset).multiplyScalar(AnimationConfig.springStiffness);
+            threeContext.offsetVelocity.add(force).multiplyScalar(AnimationConfig.damping);
             threeContext.offset.add(threeContext.offsetVelocity);
 
             // Animate (lerp) other values towards their targets for smoothness.
-            threeContext.mousePos.lerp(threeContext.targetMousePos, 0.1);
-            threeContext.zoom += (threeContext.targetZoom - threeContext.zoom) * 0.1;
-            threeContext.distortion += (threeContext.targetDistortion - threeContext.distortion) * 0.1;
-            threeContext.zoomProgress += ((threeContext.isZoomed ? 1 : 0) - threeContext.zoomProgress) * 0.1;
+            threeContext.mousePos.lerp(threeContext.targetMousePos, AnimationConfig.lerpFactor);
+            threeContext.zoom += (threeContext.targetZoom - threeContext.zoom) * AnimationConfig.lerpFactor;
+            threeContext.distortion += (threeContext.targetDistortion - threeContext.distortion) * AnimationConfig.lerpFactor;
+            threeContext.zoomProgress += ((threeContext.isZoomed ? 1 : 0) - threeContext.zoomProgress) * AnimationConfig.lerpFactor;
 
             // Detect which cell is being hovered over.
             if (!threeContext.isZoomed) {
@@ -502,7 +518,7 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
             }
 
             // Handle panning when the user is dragging.
-            if (threeContext.isDragging && !threeContext.isZoomed) {
+            if (threeContext.isDragging && !threeContext.isZoomed && plane.material.uniforms.uResolution.value.y > 0) {
                 const delta = threeContext.targetMousePos.clone().sub(threeContext.previousMouse);
                 const moveSpeed = 2.0 / plane.material.uniforms.uResolution.value.y;
                 const aspect = plane.material.uniforms.uResolution.value.x / plane.material.uniforms.uResolution.value.y;
@@ -546,10 +562,17 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
         const clickEnd = new threeContext.THREE.Vector2(event.clientX, event.clientY);
         const delta = clickEnd.clone().sub(threeContext.clickStart);
 
-        // Determine if the action was a tap or a swipe and act accordingly.
-        const tappedCellId = screenToWorld(clickEnd).divideScalar(threeContext.plane.material.uniforms.uCellSize.value).floor();
-        const isTap = delta.length() < 10;
-        const isSwipe = delta.length() > 50;
+        // This is the robust way to calculate the tapped cell ID.
+        // The previous chained-method approach was buggy.
+        const worldCoord = screenToWorld(clickEnd);
+        const currentCellSize = threeContext.plane.material.uniforms.uCellSize.value;
+        const tappedCellId = new threeContext.THREE.Vector2(
+            Math.floor(worldCoord.x / currentCellSize),
+            Math.floor(worldCoord.y / currentCellSize)
+        );
+
+        const isTap = delta.length() < AnimationConfig.tapThreshold;
+        const isSwipe = delta.length() > AnimationConfig.swipeThreshold;
 
         if (threeContext.isZoomed) {
             if (isTap) {
@@ -580,11 +603,13 @@ export default function InteractiveGridFramer(props: InteractiveGridProps) {
         const { plane, zoom, targetOffset } = threeContext;
         const aspectRatio = plane.material.uniforms.uResolution.value.x / plane.material.uniforms.uResolution.value.y;
         let { deltaX, deltaY } = event;
+        // Normalize scroll values across different browsers/devices
         if (event.deltaMode === 1) { deltaX *= 18; deltaY *= 18; }
         else if (event.deltaMode === 2) { deltaX *= window.innerWidth; deltaY *= window.innerHeight; }
-        targetOffset.x += deltaX * 0.001 * zoom * aspectRatio;
-        targetOffset.y -= deltaY * 0.001 * zoom;
+        targetOffset.x += deltaX * AnimationConfig.scrollSpeed * zoom * aspectRatio;
+        targetOffset.y -= deltaY * AnimationConfig.scrollSpeed * zoom;
     }, [threeContext]);
+
 
     // --- EFFECT: RESIZE OBSERVER ---
     // This effect ensures the WebGL canvas stays perfectly sized, even if the window is resized.
@@ -672,7 +697,7 @@ addPropertyControls(InteractiveGridFramer, {
             type: ControlType.Object,
             controls: {
                 title: { type: ControlType.String, defaultValue: "Project" },
-                image: { type: ControlType.Image, defaultValue: "https://placehold.co/512" },
+                image: { type: ControlType.Image },
                 year: { type: ControlType.Number, defaultValue: 2024 },
                 href: { type: ControlType.String, defaultValue: "#" },
                 video: { type: ControlType.File, allowedFileTypes: ["mp4", "webm"] },
